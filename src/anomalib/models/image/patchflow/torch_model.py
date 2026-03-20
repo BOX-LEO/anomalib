@@ -67,6 +67,10 @@ class PatchflowModel(nn.Module):
         crop_size: Optional center crop size ``(H, W)`` applied before
             feature extraction. The anomaly map is zero-padded back to
             ``input_size``. Defaults to ``None`` (no cropping).
+        pruned_backbone_path: Optional path to a pruned DINOv2 backbone
+            saved by ``prune_dino.py``. Only valid for DINOv2 backbones.
+            The pruned model is loaded as a full model object (not a
+            state dict) since pruning changes weight shapes.
     """
 
     def __init__(
@@ -80,6 +84,7 @@ class PatchflowModel(nn.Module):
         patch_size: int = 3,
         flow_hidden_dim: int = 128,
         crop_size: tuple[int, int] | None = None,
+        pruned_backbone_path: str | None = None,
     ) -> None:
         super().__init__()
         self.input_size = input_size
@@ -109,6 +114,15 @@ class PatchflowModel(nn.Module):
 
         for param in self.feature_extractor.parameters():
             param.requires_grad = False
+
+        # --- Optional: replace backbone with a pruned version ---
+        if pruned_backbone_path is not None:
+            if not self.is_dinov2:
+                msg = "pruned_backbone_path is only supported for DINOv2 backbones"
+                raise ValueError(msg)
+            self.feature_extractor = torch.load(pruned_backbone_path, map_location="cpu", weights_only=False)
+            for param in self.feature_extractor.parameters():
+                param.requires_grad = False
 
         # --- Feature fuser (AvgPool + upsample + concat) ---
         self.avg_pool = nn.AvgPool2d(kernel_size=patch_size, stride=1, padding=patch_size // 2)

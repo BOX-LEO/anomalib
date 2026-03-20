@@ -70,6 +70,8 @@ class Patchflow(AnomalibModule):
             input is center-cropped before feature extraction and the
             anomaly map is zero-padded back to the original input size.
             Defaults to ``None``.
+        pruned_backbone_path: Optional path to a pruned DINOv2 backbone.
+            Only valid for DINOv2 backbones. Defaults to ``None``.
         pre_processor: Pre-processor instance or boolean.
             Defaults to ``True``.
         post_processor: Post-processor instance or boolean.
@@ -90,6 +92,7 @@ class Patchflow(AnomalibModule):
         patch_size: int = 3,
         flow_hidden_dim: int = 128,
         crop_size: tuple[int, int] | None = None,
+        pruned_backbone_path: str | None = None,
         lr: float = 0.001,
         weight_decay: float = 0.0001,
         pre_processor: PreProcessor | bool = True,
@@ -117,6 +120,7 @@ class Patchflow(AnomalibModule):
             patch_size=patch_size,
             flow_hidden_dim=flow_hidden_dim,
             crop_size=crop_size,
+            pruned_backbone_path=pruned_backbone_path,
         )
         self.lr = lr
         self.weight_decay = weight_decay
