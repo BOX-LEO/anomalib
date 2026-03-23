@@ -94,9 +94,33 @@ class Attention(nn.Module):
             torch.Tensor of shape ``(B, N, C)`` containing attended features.
         """
         b, n, c = x.shape
-        qkv = self.qkv(x).reshape(b, n, 3, self.num_heads, c // self.num_heads)
-        q, k, v = torch.unbind(qkv, 2)
-        q, k, v = (t.transpose(1, 2) for t in (q, k, v))
+        qkv_out = self.qkv(x)
+        qkv_dim = qkv_out.shape[-1]
+
+        if qkv_dim == 3 * c:
+            # Standard (unpruned) path
+            qkv = qkv_out.reshape(b, n, 3, self.num_heads, c // self.num_heads)
+            q, k, v = torch.unbind(qkv, 2)
+            q, k, v = (t.transpose(1, 2) for t in (q, k, v))
+            scale = None
+        else:
+            # Pruned Q/K path: V keeps full embed_dim, Q and K are pruned equally.
+            # Pad Q/K to match V head_dim so flash/mem-efficient SDPA kernels can be used.
+            v_dim = self.proj.in_features
+            qk_dim = (qkv_dim - v_dim) // 2
+            q, k, v = qkv_out.split([qk_dim, qk_dim, v_dim], dim=-1)
+            qk_head_dim = qk_dim // self.num_heads
+            v_head_dim = v_dim // self.num_heads
+            q = q.reshape(b, n, self.num_heads, qk_head_dim).transpose(1, 2)
+            k = k.reshape(b, n, self.num_heads, qk_head_dim).transpose(1, 2)
+            v = v.reshape(b, n, self.num_heads, v_head_dim).transpose(1, 2)
+            if qk_head_dim != v_head_dim:
+                pad = v_head_dim - qk_head_dim
+                q = F.pad(q, (0, pad))
+                k = F.pad(k, (0, pad))
+                scale = qk_head_dim**-0.5
+            else:
+                scale = None
 
         x = nn.functional.scaled_dot_product_attention(
             q,
@@ -105,9 +129,11 @@ class Attention(nn.Module):
             attn_mask=None,
             dropout_p=self.attn_drop if self.training else 0.0,
             is_causal=is_causal,
+            scale=scale,
         )
 
-        x = x.transpose(1, 2).contiguous().view(b, n, c)
+        v_out = self.proj.in_features
+        x = x.transpose(1, 2).contiguous().view(b, n, v_out)
         return self.proj_drop(self.proj(x))
 
 
@@ -132,20 +158,44 @@ class MemEffAttention(Attention):
             Output tensor of shape (batch_size, seq_len, embed_dim).
         """
         batch_size, seq_len, embed_dim = x.shape
-        qkv = self.qkv(x).reshape(batch_size, seq_len, 3, self.num_heads, embed_dim // self.num_heads)
+        qkv_out = self.qkv(x)
+        qkv_dim = qkv_out.shape[-1]
 
-        q, k, v = qkv.unbind(2)
+        if qkv_dim == 3 * embed_dim:
+            # Standard (unpruned) path
+            qkv = qkv_out.reshape(batch_size, seq_len, 3, self.num_heads, embed_dim // self.num_heads)
+            q, k, v = qkv.unbind(2)
+            q, k, v = (t.transpose(1, 2) for t in (q, k, v))
+            scale = None
+        else:
+            # Pruned Q/K path: V keeps full embed_dim, Q and K are pruned equally.
+            # Pad Q/K to match V head_dim so flash/mem-efficient SDPA kernels can be used.
+            v_dim = self.proj.in_features
+            qk_dim = (qkv_dim - v_dim) // 2
+            q, k, v = qkv_out.split([qk_dim, qk_dim, v_dim], dim=-1)
+            qk_head_dim = qk_dim // self.num_heads
+            v_head_dim = v_dim // self.num_heads
+            q = q.reshape(batch_size, seq_len, self.num_heads, qk_head_dim).transpose(1, 2)
+            k = k.reshape(batch_size, seq_len, self.num_heads, qk_head_dim).transpose(1, 2)
+            v = v.reshape(batch_size, seq_len, self.num_heads, v_head_dim).transpose(1, 2)
+            if qk_head_dim != v_head_dim:
+                pad = v_head_dim - qk_head_dim
+                q = F.pad(q, (0, pad))
+                k = F.pad(k, (0, pad))
+                scale = qk_head_dim**-0.5
+            else:
+                scale = None
 
         # Use PyTorch's native scaled dot product attention for memory efficiency.
-        # Replaced xformers's memory_efficient_attention() method with pytorch's scaled
-        # dot product.
         x = F.scaled_dot_product_attention(
-            q.transpose(1, 2),
-            k.transpose(1, 2),
-            v.transpose(1, 2),
+            q,
+            k,
+            v,
             attn_mask=attn_bias,
+            scale=scale,
         )
-        x = x.transpose(1, 2).reshape(batch_size, seq_len, embed_dim)
+        v_out = self.proj.in_features
+        x = x.transpose(1, 2).reshape(batch_size, seq_len, v_out)
 
         x = self.proj(x)
         return self.proj_drop(x)

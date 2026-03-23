@@ -78,8 +78,8 @@ def _build_calibration_loader(
 
     def collate_fn(batch: list[dict]) -> torch.Tensor:
         """Extract images from MVTecAD items and apply DINO transforms."""
-        images = torch.stack([item.image for item in batch])
-        return dino_transform(images)
+        images = torch.stack([dino_transform(item.image) for item in batch])
+        return images
 
     return DataLoader(
         calib_dataset,
@@ -190,12 +190,17 @@ def prune_dino_backbone(
     # --- Run pruning ---
     logger.info("Starting pruning (target=%s, sparsity=%.2f, attn_mode=%s)", target, sparsity, attn_mode)
     runner = PruneRunner(config)
+    runner.stats_cache_dir = Path(output_dir) / "stats_cache"
     result = runner.run(
         model=model,
         calib_loader=calib_loader,
         skip_compensation=False,
         model_name=model_name,
     )
+
+    if not result.success:
+        msg = f"Pruning failed: {result.error_message}"
+        raise RuntimeError(msg)
 
     logger.info(
         "Pruning complete: compression=%.2fx, original=%d params, pruned=%d params",
