@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   publish:
+    if: github.repository == 'open-edge-platform/anomalib'
     name: Publish (${{ matrix.device }})
     runs-on: ubuntu-latest
     permissions:
